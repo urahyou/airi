@@ -1831,6 +1831,31 @@ pages:
             volume:
               description: 调节语音的响度
               label: 响度
+      gpt-sovits:
+        description: 本地 GPT-SoVITS 语音合成
+        title: GPT-SoVITS（本地）
+        fields:
+          field:
+            ref-audio-path:
+              label: 参考音频路径
+              description: 填写 GPT-SoVITS 服务所在机器可以访问的参考音频文件路径。
+            prompt-text:
+              label: 参考音频文本
+              description: 可选。填写参考音频对应的文本，以帮助模型匹配音色。
+            prompt-language:
+              label: 参考文本语言
+              description: 填写 GPT-SoVITS API 使用的语言代码，例如 zh、ja 或 en。
+            text-language:
+              label: 合成文本语言
+              description: 填写待合成文本的语言代码，例如 zh、ja 或 en。
+            speed-factor:
+              label: 语速倍率
+              description: 调整生成语音的播放速度。
+            temperature:
+              label: Temperature
+              description: 控制语音生成的随机程度。
+        playground:
+          default-text: 你好，这是 GPT-SoVITS 本地语音合成测试。
       voicevox:
         fields:
           field:

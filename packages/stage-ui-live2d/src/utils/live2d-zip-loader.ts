@@ -175,7 +175,7 @@ function createModelSettings(text: string, url: string): ModelSettings {
 export function isSettingsFile(file: string) {
   return !shouldIgnoreLive2DArchiveEntry(file)
     && !file.endsWith('items_pinned_to_model.json')
-    && (file.endsWith('.model3.json') || file.endsWith('.model.json'))
+    && (file.endsWith('.model3.json') || file.endsWith('.model.json') || basename(file) === 'model.json')
 }
 
 export function isMocFile(file: string) {

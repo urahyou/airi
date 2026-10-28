@@ -9,7 +9,7 @@ export type Live2DValidationStatus = 'VALID' | 'WARNING' | 'INVALID'
 export type Live2DValidationIssueSeverity = 'error' | 'warning'
 
 /** The file type that AIRI uses as the model target. */
-export type Live2DModelType = 'model3' | 'moc3' | 'unknown'
+export type Live2DModelType = 'model2' | 'model3' | 'moc3' | 'unknown'
 
 /** A stable identifier for a validation rule that produced an issue. */
 export type Live2DValidationIssueCode
@@ -333,6 +333,62 @@ export async function validateLive2DZip(file: File | Blob): Promise<Live2DValida
   const expressionPaths = archivePaths.filter(path => path.toLowerCase().endsWith('.exp3.json'))
   const motionPaths = archivePaths.filter(path => path.toLowerCase().endsWith('.motion3.json'))
   const displayInfoPaths = archivePaths.filter(path => path.toLowerCase().endsWith('.cdi3.json'))
+
+  const legacySettingsPath = archivePaths.find(path => /(?:^|\/)model\.json$/i.test(path) || path.toLowerCase().endsWith('.model.json'))
+  if (!settingsPaths.length && legacySettingsPath) {
+    report.model.type = 'model2'
+    report.model.entryPoint = legacySettingsPath
+    let settings: Record<string, unknown>
+    try {
+      settings = await readJsonObject(zip, legacySettingsPath)
+    }
+    catch {
+      addIssue(report, 'invalid-settings-json', 'error', `The model settings file "${legacySettingsPath}" is not valid JSON.`, 'Repair the JSON before import.')
+      updateStatus(report)
+      return report
+    }
+
+    const references: Array<{ label: string, path: string }> = []
+    const moc = readString(settings.model)
+    if (moc)
+      references.push({ label: 'MOC', path: moc })
+    else
+      addIssue(report, 'missing-moc-reference', 'error', 'The model settings do not define a MOC file.', 'Add the model path to model.json.')
+    const textures = readStringArray(settings.textures)
+    if (!textures.length)
+      addIssue(report, 'missing-reference', 'error', 'The model settings do not define any textures.', 'Add the texture paths to model.json.')
+    report.resources.textures.discovered = texturePaths.length
+    report.resources.textures.referenced = textures.length
+    references.push(...textures.map(path => ({ label: 'texture', path })))
+    if (isRecord(settings.motions)) {
+      for (const group of Object.values(settings.motions)) {
+        if (!Array.isArray(group))
+          continue
+        for (const motion of group) {
+          if (isRecord(motion) && readString(motion.file))
+            references.push({ label: 'motion', path: String(motion.file) })
+        }
+      }
+    }
+    report.resources.motions.referenced = references.filter(reference => reference.label === 'motion').length
+    report.resources.motions.discovered = archivePaths.filter(path => path.toLowerCase().endsWith('.mtn')).length
+    for (const reference of references) {
+      const path = resolveArchivePath(legacySettingsPath, reference.path)
+      const present = checkReference(report, archivePaths, { label: reference.label, reference: reference.path, expectedPath: path, settingsFileName: basename(legacySettingsPath), severity: 'error' })
+      if (present && reference.label === 'MOC') {
+        const bytes = await zip.file(path)!.async('uint8array')
+        report.model.moc = { path, version: bytes[3] ?? 0, size: bytes.length }
+        if (String.fromCharCode(...bytes.slice(0, 3)) !== 'moc')
+          addIssue(report, 'invalid-moc-header', 'error', `The MOC file "${path}" does not have a valid Cubism 2 header.`, 'Use a valid Cubism 2 MOC file.')
+        if (bytes.length > 100 * 1024 * 1024)
+          addIssue(report, 'moc-too-large', 'error', 'The MOC file exceeds the import limit.', 'Use a smaller model.')
+        else if (bytes.length > 30 * 1024 * 1024)
+          addIssue(report, 'moc-performance-risk', 'warning', 'The MOC file is large and can reduce rendering performance.', 'Use a smaller model for better performance.')
+      }
+    }
+    updateStatus(report)
+    return report
+  }
 
   report.resources.textures.discovered = texturePaths.length
   report.resources.expressions.discovered = expressionPaths.length

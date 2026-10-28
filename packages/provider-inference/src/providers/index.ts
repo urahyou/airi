@@ -51,6 +51,7 @@ import { providerVolcengineCodingPlan } from './cloud/volcengine-coding-plan'
 import { providerXAI } from './cloud/xai'
 import { providerZai } from './cloud/zai'
 import { providerBrowserWebSpeechApi } from './local/browser-web-speech-api'
+import { providerGptSovits } from './local/gpt-sovits'
 import { providerIndexTtsVllm } from './local/index-tts-vllm'
 import { providerLmStudio } from './local/lm-studio'
 import { providerOllama } from './local/ollama'
@@ -136,6 +137,7 @@ export const portableProviderDefinitions = eraseProviderDefinitions(
   providerXAI,
   providerZai,
   providerBrowserWebSpeechApi,
+  providerGptSovits,
   providerIndexTtsVllm,
   providerLmStudio,
   providerOllama,

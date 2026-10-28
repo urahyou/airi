@@ -5,6 +5,8 @@ import { extensions } from '@pixi/extensions'
 import { Ticker, TickerPlugin } from '@pixi/ticker'
 import { Live2DFactory, Live2DModel } from 'pixi-live2d-display/cubism4'
 
+import { createLegacyModel, readLegacyModelFiles } from './legacy-live2d'
+
 /**
  * Render a Live2D zip/file to an offscreen canvas and return a padded preview data URL.
  */
@@ -42,7 +44,7 @@ export async function loadLive2DModelPreview(file: File) {
   app.stage.scale.set(previewResolution)
   app.ticker.stop()
 
-  const modelInstance = new Live2DModel()
+  let modelInstance: Live2DModel | undefined
   const objUrl = URL.createObjectURL(file)
   const res = await fetch(objUrl)
   const blob = await res.blob()
@@ -51,7 +53,7 @@ export async function loadLive2DModelPreview(file: File) {
     // A loaded model is on the global `Ticker.shared`, and its textures stay in
     // the global texture cache, where they keep this app's WebGL context alive.
     // The model has no internal model when the load failed before it registered.
-    if (modelInstance.internalModel)
+    if (modelInstance?.internalModel)
       modelInstance.destroy({ texture: true, baseTexture: true })
     app.destroy()
     if (offscreenCanvas.isConnected)
@@ -60,7 +62,14 @@ export async function loadLive2DModelPreview(file: File) {
   }
 
   try {
-    await Live2DFactory.setupLive2DModel(modelInstance, [new File([blob], file.name)], { autoInteract: false })
+    const legacyFiles = await readLegacyModelFiles(blob)
+    if (legacyFiles) {
+      modelInstance = await createLegacyModel(legacyFiles)
+    }
+    else {
+      modelInstance = new Live2DModel()
+      await Live2DFactory.setupLive2DModel(modelInstance, [new File([blob], file.name)], { autoInteract: false })
+    }
     app.stage.addChild(modelInstance)
 
     modelInstance.x = 275

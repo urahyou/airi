@@ -10,6 +10,105 @@ import { VoiceController } from '../../index'
 import { keepOpen, pcmSource } from '../../testing/audio'
 
 describe('voiceController output', () => {
+  // ROOT CAUSE:
+  // Separate replies opened independent playback groups and could speak together.
+  // Interrupt mode cancels earlier replies and gates new playback on their silence receipts.
+  it.each(['batch', 'stream'] as const)('interrupts previous %s replies and waits for silence across rapid replacements', async (mode) => {
+    const silence = Promise.withResolvers<{ throughMs: number }>()
+    const stopped = vi.fn(() => silence.promise)
+    const played: string[] = []
+    const synthesized: string[] = []
+    const playback = new Playback({ nowMs: () => 0, play: (clip) => {
+      clip.onStart?.()
+      return played.length === 1
+        ? { done: silence.promise, stop: stopped }
+        : { done: Promise.resolve({ throughMs: 1 }), stop: async () => ({ throughMs: 0 }) }
+    } })
+    const controller = new VoiceController({
+      responsePolicy: 'interrupt',
+      speech: (turn) => ({
+        playback,
+        onPlaybackStart: () => played.push(turn.turnId),
+        ...(mode === 'batch'
+          ? { synthesize: async () => {
+              synthesized.push(turn.turnId)
+              return new Blob(['speech'])
+            } }
+          : { stream: async () => {
+              synthesized.push(turn.turnId)
+              return new ReadableStream<SpeechAudio>({ start(controller) {
+                controller.enqueue({ audio: new Blob(['speech']) })
+                controller.close()
+              } })
+            } }),
+      }),
+    })
+    const first = controller.openResponse({ sessionId: 'alice', turnId: 'first' })
+    const firstSpeech = first.openSpeech({ purpose: 'answer' })
+    await firstSpeech.write('First.')
+    firstSpeech.end()
+    await expect.poll(() => played).toEqual(['first'])
+
+    const second = controller.openResponse({ sessionId: 'alice', turnId: 'second' })
+    const secondSpeech = second.openSpeech({ purpose: 'answer' })
+    await secondSpeech.write('Second.')
+    secondSpeech.end()
+    await expect.poll(() => synthesized).toContain('second')
+    expect(first.signal.aborted).toBe(true)
+    expect(stopped).toHaveBeenCalled()
+    expect(played).toEqual(['first'])
+
+    const third = controller.openResponse({ sessionId: 'alice', turnId: 'third' })
+    const thirdSpeech = third.openSpeech({ purpose: 'answer' })
+    await thirdSpeech.write('Third.')
+    thirdSpeech.end()
+    await expect.poll(() => synthesized).toContain('third')
+    expect(second.signal.aborted).toBe(true)
+    expect(played).toEqual(['first'])
+
+    silence.resolve({ throughMs: 10 })
+    expect(await third.finish()).toBe('finished')
+    expect(await first.finish()).toBe('interrupted')
+    expect(await second.finish()).toBe('interrupted')
+    expect(played).toEqual(['first', 'third'])
+    await controller.close()
+  })
+
+  it('discards synthesis that completes after a newer reply replaces it', async () => {
+    const oldAudio = Promise.withResolvers<Blob>()
+    const played: string[] = []
+    const requested: string[] = []
+    const playback = new Playback({ nowMs: () => 0, play: (clip) => {
+      clip.onStart?.()
+      return { done: Promise.resolve({ throughMs: 1 }), stop: async () => ({ throughMs: 0 }) }
+    } })
+    const controller = new VoiceController({
+      responsePolicy: 'interrupt',
+      speech: turn => ({
+        playback,
+        synthesize: async () => {
+          requested.push(turn.turnId)
+          return turn.turnId === 'old' ? oldAudio.promise : new Blob(['new'])
+        },
+        onPlaybackStart: () => played.push(turn.turnId),
+      }),
+    })
+    const old = controller.openResponse({ sessionId: 'alice', turnId: 'old' })
+    const oldSpeech = old.openSpeech({ purpose: 'answer' })
+    await oldSpeech.write('Old.')
+    oldSpeech.end()
+    await expect.poll(() => requested).toEqual(['old'])
+    const latest = controller.openResponse({ sessionId: 'alice', turnId: 'new' })
+    const speech = latest.openSpeech({ purpose: 'answer' })
+    await speech.write('New.')
+    speech.end()
+    expect(await latest.finish()).toBe('finished')
+    oldAudio.resolve(new Blob(['old']))
+    expect(await old.finish()).toBe('interrupted')
+    expect(played).toEqual(['new'])
+    await controller.close()
+  })
+
   it('ends the speaking indicator only after cancelled audio becomes silent', async () => {
     const silence = Promise.withResolvers<{ throughMs: number }>()
     const started = vi.fn()

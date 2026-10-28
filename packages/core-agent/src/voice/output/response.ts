@@ -45,7 +45,13 @@ export type SpeechOutput = {
   readonly onPlaybackEnd?: (clip: SpeechClip, end: SpeechClipEnd) => void
   /** BCP 47 code of the voice. The words around a formula or a price select its language first. */
   readonly language?: string
+  /** Start long spoken sentences at a natural pause after this many characters. */
+  readonly softBreakMinChars?: number
 } & ({
+  /** Limits provider requests while completed audio plays. Uses the pipeline default when absent. */
+  readonly ttsMaxConcurrent?: SpeechPipelineOptions<Blob>['ttsMaxConcurrent']
+  /** Selects text boundaries for providers whose synthesis has a high cost per request. */
+  readonly segmenter?: SpeechPipelineOptions<Blob>['segmenter']
   readonly synthesize: SpeechPipelineOptions<Blob>['tts']
 } | {
   /** The provider consumes text and emits audio parts concurrently. Its adapter owns decoding and source coordinates. */
@@ -78,7 +84,7 @@ export class SpeechStream {
 
   private timer: ReturnType<typeof setTimeout> | undefined
   /** Holds the text after the last safe end of the streamed markdown. A control marker holds the place of a control. */
-  private readonly segmenter = new MarkdownSegmenter()
+  private readonly segmenter: MarkdownSegmenter
   /** Controls whose markers are still in the segmenter, in order. */
   private readonly controls: SpeechControl[] = []
   /** The spoken text of the last segment, for the language of a formula that starts the next one. */
@@ -86,7 +92,9 @@ export class SpeechStream {
   readonly signal = this.abort.signal
   readonly done = this.completion.promise
 
-  constructor(readonly response: VoiceResponse, readonly purpose: string, private readonly output: SpeechOutput) {}
+  constructor(readonly response: VoiceResponse, readonly purpose: string, private readonly output: SpeechOutput) {
+    this.segmenter = new MarkdownSegmenter({ softBreakMinChars: output.softBreakMinChars })
+  }
 
   /** The response registers this stream before it starts synthesis or playback. Setup errors settle `done`. */
   start(previous: Promise<unknown>, deadlineMs?: number) {
@@ -122,6 +130,8 @@ export class SpeechStream {
     const pending = new Set<PlaybackItem<Blob>>()
 
     const pipeline = createSpeechPipeline<Blob>({
+      ttsMaxConcurrent: output.ttsMaxConcurrent,
+      segmenter: output.segmenter,
       tts: async (request, signal) => {
         try {
           const audio = await output.synthesize(request, AbortSignal.any([signal, this.signal, response.signal]))
@@ -385,7 +395,7 @@ export class SpeechStream {
 export class VoiceResponse {
   private readonly abort = new AbortController()
   private readonly streams: SpeechStream[] = []
-  private ordered: Promise<unknown> = Promise.resolve()
+  private ordered: Promise<unknown>
   private sealed = false
   private outcome: 'finished' | 'cancelled' | 'interrupted' | 'failed' | undefined
   private finishing: Promise<'finished' | 'cancelled' | 'interrupted' | 'failed'> | undefined
@@ -394,7 +404,9 @@ export class VoiceResponse {
   readonly playback: PlaybackGroup
   readonly turn: TurnRef
 
-  constructor(turn: TurnRef, private readonly output: SpeechOutput, private readonly onClosed: () => void) {
+  constructor(turn: TurnRef, private readonly output: SpeechOutput, private readonly onClosed: () => void, ready: Promise<unknown> = Promise.resolve()) {
+    // Synthesis can start immediately. Playback waits until replaced responses are silent.
+    this.ordered = ready
     this.turn = Object.freeze({ ...turn })
     this.playback = output.playback.openGroup(`${turn.sessionId}:${turn.turnId}`)
   }

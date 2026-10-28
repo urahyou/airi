@@ -53,6 +53,8 @@ function isOpen(state: ScanState): boolean {
 export class MarkdownSegmenter {
   private buffer = ''
 
+  constructor(private readonly options: { softBreakMinChars?: number } = {}) {}
+
   /** Adds streamed text. Returns the segments that ended. */
   push(text: string): string[] {
     this.buffer += text
@@ -218,7 +220,11 @@ export class MarkdownSegmenter {
       // A sentence ends after CJK punctuation, or after Latin punctuation and a space. `1.` that starts a list item and
       // `3.14` are not ends.
       let end: number | undefined
-      if (cjkSentenceEnds.has(terminal))
+      const softBreak = this.options.softBreakMinChars !== undefined
+        && index + 1 >= this.options.softBreakMinChars
+        && ['，', '；', '、', ',', ';'].includes(terminal)
+        && !(terminal === ',' && /\d/.test(text[index - 1] ?? '') && /\d/.test(text[index + 1] ?? ''))
+      if (softBreak || cjkSentenceEnds.has(terminal))
         end = index + 1
       else if (latinSentenceEnds.has(terminal) && (text[index + 1] === ' ' || text[index + 1] === '\t') && !/^\s*\d+$/.test(text.slice(text.lastIndexOf('\n', index) + 1, index)))
         end = index + 1
@@ -229,8 +235,11 @@ export class MarkdownSegmenter {
       while (text[end] === ' ' || text[end] === '\t')
         end++
       // The end of the buffer cannot show a closing quote yet, so it waits for more text.
-      if (end < text.length)
+      if (end < text.length) {
+        if (softBreak)
+          return end
         last = end
+      }
     }
 
     if (atEnd && !isOpen(state) && state.fence === undefined && text.length > 0)

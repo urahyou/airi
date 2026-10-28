@@ -84,6 +84,7 @@ export const useVoiceStore = defineStore('voice', () => {
 
   const inputTracer = createVoiceInputTracer()
   const { controller, state, snapshot: transcript, error } = useVoiceController({
+    responsePolicy: 'interrupt',
     transcriber: () => hearing.createTranscriber(),
     speech: (turn) => {
       if (!output)

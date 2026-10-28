@@ -1923,6 +1923,31 @@ pages:
             volume:
               description: Adjust the volume of speech
               label: Volume
+      gpt-sovits:
+        description: Local GPT-SoVITS speech synthesis
+        title: GPT-SoVITS (Local)
+        fields:
+          field:
+            ref-audio-path:
+              label: Reference audio path
+              description: Path to a reference audio file accessible to the GPT-SoVITS service.
+            prompt-text:
+              label: Reference audio transcript
+              description: Optional text matching the reference audio to help the model reproduce its voice.
+            prompt-language:
+              label: Reference text language
+              description: GPT-SoVITS API language code, such as zh, ja, or en.
+            text-language:
+              label: Generated text language
+              description: Language code for the text to synthesize, such as zh, ja, or en.
+            speed-factor:
+              label: Speed factor
+              description: Adjust the playback speed of generated speech.
+            temperature:
+              label: Temperature
+              description: Controls the randomness of speech generation.
+        playground:
+          default-text: Hello, this is a local GPT-SoVITS speech synthesis test.
       voicevox:
         description: voicevox.hiroshiba.jp
         title: VOICEVOX

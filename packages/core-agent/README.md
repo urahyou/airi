@@ -261,7 +261,9 @@ answer.end()
 await response.finish()
 ```
 
-Producers can synthesize concurrently. Playback follows their reservation order.
+Producers can synthesize concurrently. Playback follows their reservation order within each response.
+Separate responses use parallel playback by default. Set `responsePolicy: 'interrupt'` for a single voice output, as the stage application does.
+Each new response cancels earlier synthesis and playback. Its audio waits for all earlier fades to finish, including fades from rapid replacements.
 A producer streams its text to TTS by segments. `MarkdownSegmenter` ends a segment after a sentence or a line, only where no formula, code, link, emphasis, or table is open. Then `toSpeechText` reads the segment and removes markdown that has no sound, for example emphasis delimiters, link URLs, and code blocks.
 So an answer starts to speak after its first sentence, and a formula that later writes complete is still read as one formula.
 Symbols that markdown keeps as text, for example `2 * 3` and `x ~= 3`, stay in the speech text.

@@ -6,6 +6,7 @@ import type { AiriExtension } from '../../types/airiCard'
 import type { VoiceCatalogConfiguration, VoiceCatalogIdentity, VoiceInfo } from '../providers/provider'
 
 import { errorMessageFrom } from '@moeru/std'
+import { createTtsSegmentStream } from '@proj-airi/pipelines-audio'
 import { useLocalStorageManualReset } from '@proj-airi/stage-shared/composables'
 import { refManualReset } from '@vueuse/core'
 import { generateSpeech } from '@xsai/generate-speech'
@@ -576,17 +577,25 @@ export const useSpeechStore = defineStore('speech', () => {
     if (!model || !voiceId)
       throw new Error('Speech requires a model and voice')
     const provider = providersStore.getProviderInstance<SpeechProviderWithExtraOptions<string, Record<string, unknown>>>(providerId)
-    return { ...output, language, synthesize: async (request, signal) => {
-      signal.throwIfAborted()
-      const client = await provider
-      signal.throwIfAborted()
-      const input = voice && useSSML && canUseSSML ? generateSSML(request.text, voice, { ...config, pitch: pitchValue }) : request.text
-      const settings = providerId === OFFICIAL_SPEECH_PROVIDER_ID
-        ? { ...config, extraBody: { ...(config.extraBody as Record<string, unknown> | undefined), airi_analytics: { trigger: 'auto', source: 'chat_auto_tts', voice_type: voiceType, turn_id: turn.turnId } } }
-        : config
-      const audio = await generateSpeech({ ...client.speech(model, settings), input, voice: voiceId, abortSignal: signal })
-      return new Blob([audio])
-    } }
+    return {
+      ...output,
+      language,
+      // The local API runs synchronous inference. Keep later requests cancellable in AIRI until it can accept them.
+      ttsMaxConcurrent: providerId === 'gpt-sovits' ? 1 : undefined,
+      softBreakMinChars: providerId === 'gpt-sovits' ? 24 : undefined,
+      segmenter: providerId === 'gpt-sovits' ? (tokens, meta) => createTtsSegmentStream(tokens, meta, { boost: 0 }) : undefined,
+      synthesize: async (request, signal) => {
+        signal.throwIfAborted()
+        const client = await provider
+        signal.throwIfAborted()
+        const input = voice && useSSML && canUseSSML ? generateSSML(request.text, voice, { ...config, pitch: pitchValue }) : request.text
+        const settings = providerId === OFFICIAL_SPEECH_PROVIDER_ID
+          ? { ...config, extraBody: { ...(config.extraBody as Record<string, unknown> | undefined), airi_analytics: { trigger: 'auto', source: 'chat_auto_tts', voice_type: voiceType, turn_id: turn.turnId } } }
+          : config
+        const audio = await generateSpeech({ ...client.speech(model, settings), input, voice: voiceId, abortSignal: signal })
+        return new Blob([audio])
+      },
+    }
   }
 
   function withAiriTtsAnalytics(

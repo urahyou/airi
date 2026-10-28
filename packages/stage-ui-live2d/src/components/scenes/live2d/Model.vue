@@ -7,7 +7,7 @@ import type {
   NormalizedRectangle,
   ScreenAmbientLightMode,
 } from '@proj-airi/stage-shared/screen-ambient-light'
-import type { Cubism4ModelSettings } from 'pixi-live2d-display/cubism4'
+import type { Cubism2InternalModel, Cubism4ModelSettings } from 'pixi-live2d-display/cubism4'
 
 import type { PixiLive2DInternalModel } from '../../../composables/live2d'
 import type { Live2DExpressionControl } from '../../../controls/manifest'
@@ -48,6 +48,7 @@ import { Emotion, EmotionNeutralMotionName } from '../../../constants/emotions'
 import { useLive2D } from '../../../contexts/live2d'
 import { ScreenAmbientLightFilter } from '../../../filters/screen-ambient-light'
 import { getLive2DMotionControlModelOffset, useL2dViewControl, useLive2DMotionControl, useLive2dParams } from '../../../stores'
+import { createLegacyModel, readLegacyModelFiles } from '../../../utils/legacy-live2d'
 
 const props = withDefaults(defineProps<{
   modelSrc?: string
@@ -134,6 +135,7 @@ const pixiApp = toRef(() => props.app)
 const paused = toRef(() => props.paused)
 const focusAt = toRef(() => props.focusAt)
 const model = shallowRef<Live2DModel<PixiLive2DInternalModel>>()
+const legacyModel = shallowRef<Live2DModel<Cubism2InternalModel>>()
 const initialModelWidth = ref<number>(0)
 const initialModelHeight = ref<number>(0)
 const mouthOpenSize = computed(() => Math.max(0, Math.min(100, props.mouthOpenSize)))
@@ -185,24 +187,25 @@ watch([offset, scale, modelNormalizeParams], () => {
 })
 
 function setScaleAndPosition(animated = false) {
-  if (!model.value)
+  const target = model.value ?? legacyModel.value
+  if (!target)
     return
 
   const normalized = modelNormalizeParams.value
 
   if (!animated) {
-    model.value.scale.set(normalized.scale * scale.value, normalized.scale * scale.value)
-    model.value.x = normalized.x + offset.value.x
-    model.value.y = normalized.y + offset.value.y
+    target.scale.set(normalized.scale * scale.value, normalized.scale * scale.value)
+    target.x = normalized.x + offset.value.x
+    target.y = normalized.y + offset.value.y
     return
   }
 
   resizeAnimation?.pause()
 
   const current = {
-    scale: model.value.scale.x,
-    x: model.value.x,
-    y: model.value.y,
+    scale: target.scale.x,
+    x: target.x,
+    y: target.y,
   }
 
   resizeAnimation = animate(current, {
@@ -212,17 +215,17 @@ function setScaleAndPosition(animated = false) {
     duration: 200,
     ease: 'outQuad',
     onUpdate: () => {
-      if (!model.value)
+      if (target !== (model.value ?? legacyModel.value))
         return
-      model.value.scale.set(current.scale, current.scale)
-      model.value.x = current.x
-      model.value.y = current.y
+      target.scale.set(current.scale, current.scale)
+      target.x = current.x
+      target.y = current.y
     },
   })
 }
 
 function destroyRenderedModel() {
-  const renderedModel = model.value
+  const renderedModel = model.value ?? legacyModel.value
   if (!renderedModel)
     return
 
@@ -235,6 +238,7 @@ function destroyRenderedModel() {
   }
   finally {
     model.value = undefined
+    legacyModel.value = undefined
   }
 }
 
@@ -327,7 +331,7 @@ async function performModelLoad() {
   }
 
   // REVIEW: here as await until(...) guarded the pixiApp and stage to be valid.
-  if (model.value) {
+  if (model.value || legacyModel.value) {
     expressionReferences.value = []
     expressionLoader.value = undefined
     destroyRenderedModel()
@@ -345,6 +349,38 @@ async function performModelLoad() {
       modelLoading.value = false
       componentState.value = 'mounted'
       return
+    }
+
+    if (modelSource.startsWith('blob:')) {
+      const files = await readLegacyModelFiles(await (await fetch(modelSource)).blob())
+      if (files) {
+        const legacy = await createLegacyModel(files)
+        if (isUnmounted || modelSource !== modelSrcRef.value) {
+          legacy.destroy({ texture: true, baseTexture: true })
+          return
+        }
+        legacyModel.value = legacy
+        pixiApp.value!.stage.addChild(legacy)
+        initialModelWidth.value = legacy.width
+        initialModelHeight.value = legacy.height
+        legacy.anchor.set(0.5, 0.5)
+        setScaleAndPosition()
+        legacy.on('hit', (areas) => {
+          if (areas.includes('body'))
+            void legacy.motion('tap_body')
+        })
+        const motions = Object.entries(legacy.internalModel.motionManager.definitions).flatMap(([group, definitions]) =>
+          (definitions ?? []).map((motion, index) => ({ fileName: motion.file, group, index })))
+        availableMotions.value = motions.map(motion => ({ fileName: motion.fileName, motionName: motion.group, motionIndex: motion.index }))
+        live2d.motions.register(motions)
+        live2d.motions.setExecutor({ play: motion => legacy.motion(motion.group, motion.index, MotionPriority.FORCE) })
+        legacy.internalModel.on('beforeModelUpdate', () => {
+          if (nowSpeaking.value)
+            legacy.internalModel.coreModel.setParamFloat('PARAM_MOUTH_OPEN_Y', mouthOpenSize.value)
+        })
+        emits('modelLoaded')
+        return
+      }
     }
 
     const live2DModel = new Live2DModel<PixiLive2DInternalModel>()
@@ -624,14 +660,15 @@ function selectExpressionExecutor() {
 
 async function setMotion(motionName: string, index?: number) {
   // TODO: motion? Not every Live2D model has motion, we do need to help users to set motion
-  if (!model.value) {
+  const target = model.value ?? legacyModel.value
+  if (!target) {
     console.warn('Cannot set motion: model not loaded')
     return false
   }
 
   console.info('Setting motion:', motionName, 'index:', index)
   try {
-    await model.value.motion(motionName, index, MotionPriority.FORCE)
+    await target.motion(motionName, index, MotionPriority.FORCE)
     console.info('Motion started successfully:', motionName)
     return true
   }
@@ -679,7 +716,8 @@ function updateDropShadow() {
 // shadow loop below runs every frame, and a fresh array per frame would make
 // Pixi re-evaluate the filter stack for nothing.
 function updateFilterStack() {
-  if (!model.value)
+  const target = model.value ?? legacyModel.value
+  if (!target)
     return
 
   const filters: Filter[] = []
@@ -688,11 +726,11 @@ function updateFilterStack() {
   if (live2dShadowEnabled.value)
     filters.push(dropShadowFilter.value)
 
-  const current = model.value.filters ?? []
+  const current = target.filters ?? []
   const unchanged = current.length === filters.length
     && current.every((filter, index) => filter === filters[index])
   if (!unchanged)
-    model.value.filters = filters
+    target.filters = filters
 }
 
 function updateModelFilters() {
@@ -703,7 +741,7 @@ function updateModelFilters() {
 
 watch(modelSrcRef, async () => await loadModel(), { immediate: true })
 watch(dark, updateModelFilters, { immediate: true })
-watch([model, themeColorsHue], updateModelFilters)
+watch([model, legacyModel, themeColorsHue], updateModelFilters)
 watch([live2dShadowEnabled, screenAmbientLightActive], updateFilterStack)
 watch(
   [
@@ -920,12 +958,13 @@ watch(live2dExpressionEnabled, (enabled) => {
 })
 
 watch(focusAt, (value) => {
-  if (!model.value)
+  const target = model.value ?? legacyModel.value
+  if (!target)
     return
   if (!props.eyeTracking)
     return
 
-  model.value.focus(value.x, value.y)
+  target.focus(value.x, value.y)
 })
 
 onMounted(() => {
@@ -948,8 +987,9 @@ onUnmounted(() => {
   // creates its own pair, so the light-map textures and the blur pass would
   // stay on the GPU for every renderer switch. The stack comes off the model
   // first so that nothing can reference a destroyed filter.
-  if (model.value)
-    model.value.filters = []
+  const current = model.value ?? legacyModel.value
+  if (current)
+    current.filters = []
   screenAmbientLightFilter.value.destroy()
   dropShadowFilter.value.destroy()
 

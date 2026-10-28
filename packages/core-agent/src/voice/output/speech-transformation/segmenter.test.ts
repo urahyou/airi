@@ -58,3 +58,16 @@ describe('markdownSegmenter', () => {
     expect(segmenter.flush()).toEqual(['In $x^2$'])
   })
 })
+
+describe('long spoken sentences', () => {
+  it('releases a long clause at a comma before the sentence ends', () => {
+    const segmenter = new MarkdownSegmenter({ softBreakMinChars: 24 })
+    expect(segmenter.push('星星，今天我们来聊聊宇宙的故事，在很久很久以前，宇宙还非常炽热，后来')).toEqual(['星星，今天我们来聊聊宇宙的故事，在很久很久以前，'])
+  })
+
+  it('does not split short clauses, decimals or unfinished markdown', () => {
+    const segmenter = new MarkdownSegmenter({ softBreakMinChars: 8 })
+    expect(segmenter.push('你好，星星，')).toEqual([])
+    expect(segmenter.push(' $x = 1,234 + 5$，继续')).toEqual(['你好，星星， $x = 1,234 + 5$，'])
+  })
+})

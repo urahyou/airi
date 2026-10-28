@@ -28,6 +28,8 @@ export interface VoiceControllerOptions extends SpeechInputPorts {
   /** Shared input. Attempts and plugins subscribe to it. The controller never closes it. */
   readonly audio?: AudioInput
   readonly speech?: (turn: TurnRef) => SpeechOutput
+  /** Interrupt mode replaces prior replies and waits for silence. Independent hosts can use the default parallel policy. */
+  readonly responsePolicy?: 'parallel' | 'interrupt'
   /** Persistence retries must reuse eventId. This is an agent control event, not a chat message. */
   readonly recordInterruption?: (event: VoiceInterruptionEvent) => Promise<{ status: 'acknowledged' | 'queued' | 'failed' }>
   /** @default 100. Playback uses its audio clock to apply this fade. */
@@ -234,7 +236,12 @@ export class VoiceController {
     if (!this.options.speech)
       throw new Error('Speech output is not configured')
 
-    const response = new VoiceResponse(turn, this.options.speech(turn), () => this.responses.delete(key))
+    const output = this.options.speech(turn)
+    // Closed responses remain here until their audio drains. Rapid replacements must wait for those fades too.
+    const ready = this.options.responsePolicy === 'interrupt'
+      ? this.interrupt({ turns: [...this.responses.values()].map(response => response.turn), cause: 'new-response' }).silenced
+      : Promise.resolve()
+    const response = new VoiceResponse(turn, output, () => this.responses.delete(key), ready)
     this.usedTurns.add(key)
     this.responses.set(key, response)
     return response

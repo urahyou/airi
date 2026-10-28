@@ -82,6 +82,13 @@ describe('live2d zip loader settings sanitization', () => {
     vi.unstubAllGlobals()
   })
 
+  it('recognizes the plain model.json entry used by Cubism 2 archives', async () => {
+    const { isSettingsFile } = await import('./live2d-zip-loader')
+    expect(isSettingsFile('model.json')).toBe(true)
+    expect(isSettingsFile('character/model.json')).toBe(true)
+    expect(isSettingsFile('character/items_pinned_to_model.json')).toBe(false)
+  })
+
   it('loads a zip model when model3.json contains Physics: null', async () => {
     await import('./live2d-zip-loader')
     const { ZipLoader } = await import('pixi-live2d-display/cubism4')

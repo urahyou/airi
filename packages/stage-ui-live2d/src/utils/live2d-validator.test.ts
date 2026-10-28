@@ -95,6 +95,30 @@ async function createLooseMocFile(): Promise<File> {
 }
 
 describe('validateLive2DZip', () => {
+  it('accepts a Cubism 2 archive with model.json, moc, textures and motions', async () => {
+    const zip = new JSZip()
+    zip.file('avatar/model.json', JSON.stringify({ model: 'avatar.moc', textures: ['texture.png'], motions: { idle: [{ file: 'idle.mtn' }] } }))
+    zip.file('avatar/avatar.moc', new Uint8Array([109, 111, 99, 9]))
+    zip.file('avatar/texture.png', new Uint8Array([1, 2, 3]))
+    zip.file('avatar/idle.mtn', 'version=2')
+    const report = await validateLive2DZip(new Blob([await zip.generateAsync({ type: 'arraybuffer' })]))
+    expect(report.status).toBe('VALID')
+    expect(report.model.type).toBe('model2')
+    expect(report.model.entryPoint).toBe('avatar/model.json')
+    expect(report.model.moc?.path).toBe('avatar/avatar.moc')
+    expect(report.resources.textures.referenced).toBe(1)
+    expect(report.resources.motions.referenced).toBe(1)
+  })
+
+  it('rejects a Cubism 2 archive with a missing texture', async () => {
+    const zip = new JSZip()
+    zip.file('model.json', JSON.stringify({ model: 'avatar.moc', textures: ['missing.png'] }))
+    zip.file('avatar.moc', new Uint8Array([109, 111, 99, 9]))
+    const report = await validateLive2DZip(new Blob([await zip.generateAsync({ type: 'arraybuffer' })]))
+    expect(report.status).toBe('INVALID')
+    expect(report.issues.some(issue => issue.code === 'missing-reference')).toBe(true)
+  })
+
   it('reports the model type, parsed resources, parameters, and base model data', async () => {
     const report = await validateLive2DZip(await createLive2DFile())
 

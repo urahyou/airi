@@ -148,6 +148,8 @@ Use pnpm workspace filters to limit a command to one workspace. Replace `<packag
 
 ## Git and Pull Requests
 
+- After verified project changes, commit and push them to `personal` (`https://github.com/urahyou/airi.git`). Keep the current feature branch unless the user requests another branch.
+
 - Use Conventional Commits, for example `feat(<package name>): add runner reconnect backoff`. Do not use gitmoji.
 - Name branches `username/feat/short-name`.
 - Rebase when you pull.
