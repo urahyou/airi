@@ -28,6 +28,7 @@ export { SpeechStream, VoiceResponse } from './output/response'
 export type { SpeechAudio, SpeechClip, SpeechClipEnd, SpeechOutput } from './output/response'
 export { defaultSpeechPreprocessors, toSpeechText } from './output/speech-transformation'
 export type { SpeechTextOptions } from './output/speech-transformation'
+export { normalizeMathDelimiters } from './output/speech-transformation/markdown'
 export { mathSpeech, mathSpeechPreprocessor, moneySpeechPreprocessor, speakMath, toMathJson } from './output/speech-transformation/preprocessor'
 export type { SpeechFormulaContext, SpeechPreprocessor, SpeechProseContext } from './output/speech-transformation/preprocessor'
 export type {
@@ -61,4 +62,5 @@ export { createEndJudgementRule, createPauseRule, createSpeechActivityRule } fro
 export type { PauseRuleOptions, SpeechActivityRuleOptions } from './policy/rules'
 export type { Emission, InputRevisions, RevisionMetadata, RuleContext, RuleStep, VoiceCommand, VoiceRule } from './policy/types'
 export { turnKey } from './turn'
+
 export type { TurnRef } from './turn'

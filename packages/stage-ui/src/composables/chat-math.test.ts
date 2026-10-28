@@ -10,6 +10,13 @@ describe('withoutPendingMath', () => {
     expect(withoutPendingMath('Speed:\n\n```latex\nu_t = \\frac{d')).toBe('Speed:\n\n')
   })
 
+  it('waits for unclosed parenthesis and bracket math while streaming', () => {
+    expect(withoutPendingMath(String.raw`结果 \(x^`)).toBe('结果 ')
+    expect(withoutPendingMath(String.raw`结果 \[x^`)).toBe('结果 ')
+    expect(withoutPendingMath(String.raw`结果 \(x^2\) 完成`)).toBe(String.raw`结果 \(x^2\) 完成`)
+    expect(withoutPendingMath('代码 `$$` 和 `\\(x` 未结束')).toBe('代码 `$$` 和 `\\(x` 未结束')
+  })
+
   it('keeps closed formulas, code, escaped dollars, and code fences of other languages', () => {
     const closed = 'Speed:\n\n$$\nu_t = x_1 - x_0\n$$\n\nNext.'
     expect(withoutPendingMath(closed)).toBe(closed)

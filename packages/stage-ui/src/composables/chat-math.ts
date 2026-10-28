@@ -17,6 +17,23 @@ export function isChatMathFenceLanguage(language: string | undefined): boolean {
   return chatMathFenceLanguages.has(language?.toLowerCase() ?? '')
 }
 
+/** Keep currency and ambiguous digit-led spans as text. */
+const remarkChatInlineMath: Plugin<[], Root> = () => (tree, file) => {
+  const source = String(file.value)
+  visit(tree, 'inlineMath', (node, index, parent) => {
+    if (index === undefined || !parent)
+      return
+    const start = node.position?.start.offset
+    const end = node.position?.end.offset
+    if (start === undefined || end === undefined || source.slice(start, start + 2) === '$$')
+      return
+    if (/^\d|^\s|\s$/.test(node.value) || /^\d/.test(source.slice(end, end + 1))) {
+      parent.children.splice(index, 1, { type: 'text', value: source.slice(start, end) })
+      return [SKIP, index + 1]
+    }
+  })
+}
+
 const remarkChatMath: Plugin<[], Root> = () => (tree) => {
   visit(tree, 'code', (node, index, parent) => {
     const language = node.lang?.toLowerCase()
@@ -71,7 +88,9 @@ const remarkChatMath: Plugin<[], Root> = () => (tree) => {
 export function withoutPendingMath(markdown: string): string {
   let fence: { marker: string, math: boolean, start: number } | undefined
   let dollars: number | undefined
+  let delimiter: { close: string, start: number } | undefined
   let offset = 0
+  let inlineTicks = 0
   for (const line of markdown.split(/(?<=\n)/)) {
     const opening = /^ {0,3}(`{3,}|~{3,})\s*([\w-]*)/.exec(line)
     if (fence) {
@@ -83,26 +102,44 @@ export function withoutPendingMath(markdown: string): string {
     }
     else {
       // Each `$$` outside code opens or closes a formula. An escaped `\$$` is text.
-      for (const match of line.matchAll(/(?<!\\)\$\$/g))
-        dollars = dollars === undefined ? offset + match.index : undefined
+      for (const match of line.matchAll(/(?<!\\)(?:`+|\$\$|\\[()[\]])/g)) {
+        const token = match[0]
+        if (token.startsWith('`')) {
+          if (!inlineTicks)
+            inlineTicks = token.length
+          else if (inlineTicks === token.length)
+            inlineTicks = 0
+          continue
+        }
+        if (inlineTicks)
+          continue
+        if (token === '$$' && !delimiter)
+          dollars = dollars === undefined ? offset + match.index : undefined
+        else if (dollars === undefined && !delimiter && (token === '\\(' || token === '\\['))
+          delimiter = { close: token === '\\(' ? '\\)' : '\\]', start: offset + match.index }
+        else if (delimiter?.close === token)
+          delimiter = undefined
+      }
     }
     offset += line.length
   }
   if (fence?.math)
     return markdown.slice(0, fence.start)
-  return dollars === undefined ? markdown : markdown.slice(0, dollars)
+  const pending = dollars ?? delimiter?.start
+  return pending === undefined ? markdown : markdown.slice(0, pending)
 }
 
 /**
  * Defines the math syntax for AIRI chat Markdown.
  *
- * A single dollar sign stays text, and `$$...$$` defines inline math. A
+ * Single-dollar formulas render unless they are ambiguous with currency. A
  * `latex` or `tex` fence contains one formula per non-empty row. The `block`
  * meta value keeps the fence intact.
  */
 export const chatMathPreset = {
   plugins: [
-    [remarkMath, { singleDollarTextMath: false }],
+    remarkMath,
+    remarkChatInlineMath,
     remarkChatMath,
   ],
 } satisfies Preset

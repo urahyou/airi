@@ -7,5 +7,7 @@ describe('normalizeMathDelimiters', () => {
     expect(normalizeMathDelimiters(String.raw`a \(x\) b \[y\]`)).toBe('a $x$ b $$y$$')
     expect(normalizeMathDelimiters('`\\(x\\)` and \\(x\\)')).toBe('`\\(x\\)` and $x$')
     expect(normalizeMathDelimiters('```\n\\[x\\]\n```')).toBe('```\n\\[x\\]\n```')
+    expect(normalizeMathDelimiters('```\n\\[x\\]')).toBe('```\n\\[x\\]')
+    expect(normalizeMathDelimiters('`\\(x\\)')).toBe('`\\(x\\)')
   })
 })

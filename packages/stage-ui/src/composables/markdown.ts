@@ -8,6 +8,7 @@ import RehypeStringify from 'rehype-stringify'
 import RemarkParse from 'remark-parse'
 import RemarkRehype from 'remark-rehype'
 
+import { normalizeMathDelimiters } from '@proj-airi/core-agent'
 import { defaultPerfTracer } from '@proj-airi/stage-shared'
 import { unified } from 'unified'
 import { visit } from 'unist-util-visit'
@@ -95,7 +96,8 @@ export function useMarkdown() {
     .use(RehypeStringify)
 
   return {
-    process: async (markdown: string): Promise<string> => {
+    process: async (input: string): Promise<string> => {
+      const markdown = normalizeMathDelimiters(input, { displayBlocks: true })
       const hasCodeFence = /`{3,}|~{3,}/.test(markdown)
       const meta = { length: markdown.length, hasCodeFence }
 
@@ -133,7 +135,8 @@ export function useMarkdown() {
     },
 
     // Synchronous version for backward compatibility
-    processSync: (markdown: string): string => {
+    processSync: (input: string): string => {
+      const markdown = normalizeMathDelimiters(input, { displayBlocks: true })
       const start = performance.now()
       const output = fallbackProcessor
         .processSync(markdown)

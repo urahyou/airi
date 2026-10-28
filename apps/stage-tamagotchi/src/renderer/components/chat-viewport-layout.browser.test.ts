@@ -32,9 +32,11 @@ function createEnglishI18n() {
 }
 
 describe('desktop chat viewport layout', () => {
-  it('keeps history behind the fixed translucent composer', async () => {
+  it('keeps history above the composer while it scrolls', async () => {
+    const composerHeight = shallowRef(80)
     const TestHost = defineComponent({
       components: { ChatViewportLayout, ScrollableArea },
+      setup: () => ({ composerHeight }),
       template: `
         <ChatViewportLayout style="height: 320px; width: 240px">
           <template #history>
@@ -47,7 +49,7 @@ describe('desktop chat viewport layout', () => {
             </ScrollableArea>
           </template>
           <template #composer>
-            <div style="height: 80px">Fixed composer</div>
+            <div :style="{ height: composerHeight + 'px' }">Fixed composer</div>
           </template>
         </ChatViewportLayout>
       `,
@@ -67,7 +69,6 @@ describe('desktop chat viewport layout', () => {
 
     await vi.waitFor(() => {
       expect(getComputedStyle(history).paddingBottom).toBe('16px')
-      expect(Number.parseFloat(getComputedStyle(history, '::after').height)).toBeGreaterThan(80)
       expect(history.scrollHeight).toBeGreaterThan(history.clientHeight)
     })
 
@@ -76,8 +77,8 @@ describe('desktop chat viewport layout', () => {
     const composerRect = composer.getBoundingClientRect()
     expect(historyRect.top).toBe(layoutRect.top)
     expect(historyRect.right).toBe(layoutRect.right)
-    expect(historyRect.bottom).toBe(layoutRect.bottom)
-    expect(composerRect.top).toBeLessThan(historyRect.bottom)
+    expect(historyRect.bottom).toBeLessThanOrEqual(composerRect.top)
+    expect(composerRect.bottom).toBeLessThanOrEqual(layoutRect.bottom)
     expect(getComputedStyle(history).borderRadius).toBe('0px')
 
     const scrollbarRect = scrollbar.getBoundingClientRect()
@@ -90,16 +91,13 @@ describe('desktop chat viewport layout', () => {
     history.scrollTop = 120
     history.dispatchEvent(new Event('scroll'))
     expect(composer.getBoundingClientRect().top).toBe(composerTop)
+    composerHeight.value = 140
+    await vi.waitFor(() => {
+      expect(historyLayer.getBoundingClientRect().bottom).toBeLessThanOrEqual(composer.getBoundingClientRect().top)
+      expect(composer.getBoundingClientRect().height).toBe(140)
+    })
   })
 
-  // https://github.com/moeru-ai/airi/pull/2489#discussion_r3967818100
-  // ROOT CAUSE:
-  //
-  // The viewport spacer increases the native scroll range, but Virtua calculates
-  // end alignment from item offsets that do not include that spacer. An automatic
-  // tail scroll therefore leaves the final message behind the fixed composer.
-  //
-  // The Virtua scroll adapter must add the composer inset to end-aligned requests.
   it('keeps an automatically scrolled long-history tail above the fixed composer', async () => {
     const messages = shallowRef<ChatHistoryItem[]>(Array.from({ length: 40 }, (_, index) => ({
       id: `message-${index}`,
@@ -176,14 +174,6 @@ describe('desktop chat viewport layout', () => {
     await expectVisibleTail('Expanded streaming tail')
   })
 
-  // ROOT CAUSE:
-  //
-  // Virtua bottom-aligns a short list with transforms. Transforms do not add to
-  // the viewport's scroll size, so the composer spacer cannot reveal a message
-  // that the transform placed behind the composer.
-  //
-  // The short-list transform must reserve the composer inset. Long histories
-  // still use the viewport spacer and can scroll behind the translucent layer.
   it('keeps a short virtualized history above the fixed composer', async () => {
     const messages: ChatHistoryItem[] = [{
       id: 'short-history-message',

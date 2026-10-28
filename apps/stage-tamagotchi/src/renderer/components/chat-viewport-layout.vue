@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { useElementSize } from '@vueuse/core'
-import { computed, useTemplateRef } from 'vue'
+import { useTemplateRef } from 'vue'
 
 withDefaults(defineProps<{
   /** `true` when the composer slot owns its bottom space, such as a foldable composer whose tab drops to the bottom edge. */
@@ -15,11 +14,6 @@ defineSlots<{
 }>()
 
 const historyLayer = useTemplateRef<HTMLElement>('history-layer')
-const composerLayer = useTemplateRef<HTMLElement>('composer-layer')
-const { height: composerHeight } = useElementSize(composerLayer, undefined, { box: 'border-box' })
-const layoutStyle = computed(() => ({
-  '--chat-composer-height': `${composerHeight.value}px`,
-}))
 
 defineExpose({
   historyLayer,
@@ -32,7 +26,6 @@ defineExpose({
     :class="[
       'chat-viewport-layout',
     ]"
-    :style="layoutStyle"
   >
     <div
       ref="history-layer"
@@ -41,11 +34,10 @@ defineExpose({
         'chat-history-layer',
       ]"
     >
-      <slot name="history" :tail-inset="composerHeight" />
+      <slot name="history" :tail-inset="0" />
     </div>
 
     <div
-      ref="composer-layer"
       data-testid="chat-composer-layer"
       :class="[
         'chat-composer-layer',
@@ -60,21 +52,21 @@ defineExpose({
 <style scoped>
 .chat-viewport-layout {
   display: grid;
-  grid-template-areas: 'chat-stack';
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: 'history' 'composer';
+  grid-template-rows: minmax(0, 1fr) auto;
   width: 100%;
   height: 100%;
   overflow: hidden;
 }
 
 .chat-history-layer {
-  grid-area: chat-stack;
+  grid-area: history;
   position: relative;
   min-height: 0;
 }
 
 .chat-composer-layer {
-  grid-area: chat-stack;
+  grid-area: composer;
   align-self: end;
   position: relative;
   z-index: 20;
@@ -89,17 +81,10 @@ defineExpose({
 }
 
 .chat-viewport-layout :deep(.chat-history-list) {
-  --chat-history-bottom-inset: calc(var(--chat-composer-height) + 1rem);
+  --chat-history-bottom-inset: 0px;
 
   box-sizing: border-box;
   border-radius: 0 !important;
   padding: 1rem;
-}
-
-.chat-viewport-layout :deep(.chat-history-list)::after {
-  display: block;
-  height: var(--chat-history-bottom-inset);
-  content: '';
-  pointer-events: none;
 }
 </style>

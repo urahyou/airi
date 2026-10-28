@@ -7,6 +7,24 @@ function mathNodeCount(html: string): number {
 }
 
 describe('useMarkdown', () => {
+  it('renders common inline math while preserving prices and code', () => {
+    const text = `当 $a$ 远小于 $a_0$ 时，半径为 $r^2$；价格是 $5 and $10。代码 \`$x$\`。${String.raw`公式 \(x^2\)。`}`
+    const html = useMarkdown().processSync(text)
+    expect(mathNodeCount(html)).toBe(4)
+    expect(html).toContain('$5 and $10')
+    expect(html).toContain('<code>$x$</code>')
+    expect(html).not.toContain('katex-error')
+  })
+
+  it('handles display delimiters and leaves escaped math in code untouched', () => {
+    const text = `${String.raw`公式：\[\frac{GM}{r^2}\]，代码 `}\`${String.raw`\(x\)`}\`${String.raw`，标价 \$5。`}`
+    const html = useMarkdown().processSync(text)
+    expect(mathNodeCount(html)).toBe(1)
+    expect(html).toContain('display="block"')
+    expect(html).toContain(String.raw`<code>\(x\)</code>`)
+    expect(html).toContain('$5')
+  })
+
   // https://github.com/moeru-ai/airi/issues/2796
   // ROOT CAUSE:
   // The processor recognized only backtick fences and skipped highlighting for tilde fences.
