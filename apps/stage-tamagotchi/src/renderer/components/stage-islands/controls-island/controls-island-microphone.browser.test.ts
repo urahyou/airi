@@ -16,6 +16,7 @@ import '@unocss/reset/tailwind.css'
 import 'virtual:uno.css'
 
 vi.mock('@proj-airi/electron-vueuse', () => ({
+  useElectronAllDisplays: () => ref([]),
   useElectronEventaContext: () => ref({ on: vi.fn(() => vi.fn()), emit: vi.fn() }),
   useElectronEventaInvoke: () => vi.fn().mockResolvedValue(false),
   useElectronMouseInElement: () => ({ isOutside: ref(false) }),
@@ -46,6 +47,7 @@ function mountControlsIsland(options: { transitions?: boolean } = {}) {
   const pinia = createPinia()
   const dock = ref('bottom-right' as const)
   const screen = render(ControlsIsland, {
+    props: { anchor: { x: 200, y: 250 } },
     global: {
       provide: {
         [controlsIslandPlacementKey as symbol]: {
@@ -150,11 +152,13 @@ describe('controls Island microphone', () => {
     askPermission.mockResolvedValue(true)
     const microphone = screen.getByTestId('controls-island-microphone')
     await expect.element(microphone).toBeVisible()
-    const before = microphone.element().getBoundingClientRect().top
+    await Promise.all(screen.getByTestId('main-controls').element().getAnimations().map(animation => animation.finished))
+    const row = microphone.element().closest('.fan-action')!
+    const before = row.getBoundingClientRect().top
 
     await microphone.click()
 
     await vi.waitFor(() => expect(microphone.element().querySelector('svg')).not.toBeNull())
-    expect(microphone.element().getBoundingClientRect().top).toBe(before)
+    expect(row.getBoundingClientRect().top).toBe(before)
   })
 })

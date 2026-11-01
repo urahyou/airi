@@ -1,14 +1,13 @@
 <script setup lang="ts">
-import { defineInvoke } from '@moeru/eventa'
-import { useElectronEventaContext, useElectronEventaInvoke, useElectronMouseInElement } from '@proj-airi/electron-vueuse'
+import { useElectronAllDisplays, useElectronEventaInvoke, useElectronMouseInElement } from '@proj-airi/electron-vueuse'
 import { IS_DEV } from '@proj-airi/stage-shared'
 import { HearingConfigDialog, InboxPanel } from '@proj-airi/stage-ui/components'
 import { useInboxStore } from '@proj-airi/stage-ui/stores/inbox'
 import { useSettings, useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
 import { Badge, IconButton, ScrollableArea, useTheme } from '@proj-airi/ui'
-import { refDebounced, useFocusWithin, useIntervalFn, useMouseInElement, useMousePressed, useNow } from '@vueuse/core'
+import { useElementSize, useMouseInElement, useMousePressed, useNow, useResizeObserver, useWindowSize } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
-import { computed, nextTick, reactive, ref, useId, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, reactive, ref, shallowRef, useId, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import StatusIsland from '../status-island/index.vue'
@@ -22,30 +21,25 @@ import ControlsIslandSpeechMute from './controls-island-speech-mute.vue'
 import IndicatorMicVolume from './indicator-mic-volume.vue'
 
 import {
-  electron,
   electronAppQuit,
   electronCenterMainWindow,
   electronOpenSettings,
-  electronStartDraggingWindow,
   electronWindowSetAlwaysOnTop,
 } from '../../../../shared/eventa'
+import { findDominantDisplayArea } from '../../../../shared/utils/electron/display'
 import { useControlsIslandLayout } from './use-controls-island-layout'
 import { useControlsIslandPlacement } from './use-controls-island-placement'
 
 interface Emits {
   /** Reports whether an active interaction must delay placement changes. */
   interactionChange: [active: boolean]
+  close: []
 }
 
-const props = withDefaults(defineProps<{
-  /**
-   * The cursor is away from the stage window, so the Island hides. The stage
-   * page owns the cursor signals and decides this.
-   */
-  cursorAway?: boolean
-}>(), {
-  cursorAway: false,
-})
+const props = defineProps<{
+  /** Model coordinates in the stage viewport. */
+  anchor?: { x: number, y: number }
+}>()
 
 const emit = defineEmits<Emits>()
 
@@ -68,15 +62,13 @@ const themeLabel = computed(() => ({
   auto: t('tamagotchi.stage.controls-island.switch-to-light-mode'),
 })[themeMode.value])
 const placement = useControlsIslandPlacement()
-const { dock, isLeft, isTop, motionPhase } = placement
+const { dock } = placement
 
 const settingsAudioDeviceStore = useSettingsAudioDevice()
 const settingsStore = useSettings()
-const context = useElectronEventaContext()
 const { enabled } = storeToRefs(settingsAudioDeviceStore)
 const { alwaysOnTop, controlsIslandIconSize } = storeToRefs(settingsStore)
 const openSettings = useElectronEventaInvoke(electronOpenSettings)
-const isLinux = useElectronEventaInvoke(electron.app.isLinux)
 const quitApp = useElectronEventaInvoke(electronAppQuit)
 const setAlwaysOnTop = useElectronEventaInvoke(electronWindowSetAlwaysOnTop)
 const centerMainWindow = useElectronEventaInvoke(electronCenterMainWindow)
@@ -186,14 +178,7 @@ async function toggleMicrophone() {
 // longer depends on this composable.
 const { isOutside: isOutsideByCursor } = useElectronMouseInElement(islandElement)
 const { isOutside: isOutsideByDom } = useMouseInElement(islandElement)
-const isOutside = computed(() => isOutsideByCursor.value && isOutsideByDom.value)
-const isOutsideAfter2seconds = refDebounced(isOutside, 1500)
-
-// A user who works in the menu, in a dialog, or with the keyboard keeps the
-// Island after the cursor leaves the window.
-const { focused: islandFocused } = useFocusWithin(islandElement)
-const concealed = computed(() => props.cursorAway && !expanded.value && !isBlocked.value && !islandFocused.value)
-
+const isOutside = computed(() => !props.anchor || (isOutsideByCursor.value && isOutsideByDom.value))
 // The stage page observes this element for cursor hit testing.
 defineExpose({
   get element() { return islandElement.value },
@@ -203,10 +188,9 @@ defineExpose({
   set hearingDialogOpen(v: boolean) { setOverlay('hearing', v) },
 })
 
-watch(isOutsideAfter2seconds, (outside) => {
-  if (outside && expanded.value && !isBlocked.value) {
+watch(() => props.anchor, (anchor) => {
+  if (!anchor)
     expanded.value = false
-  }
 })
 
 watch(expanded, (isExpanded) => {
@@ -225,12 +209,6 @@ watch(expanded, (isExpanded) => {
 watch([expanded, isBlocked], ([isExpanded, isInteractionBlocked]) => {
   emit('interactionChange', isExpanded || isInteractionBlocked)
 }, { immediate: true })
-
-useIntervalFn(() => {
-  if (expanded.value && isOutside.value && !isBlocked.value) {
-    expanded.value = false
-  }
-}, 1500)
 
 // Apply alwaysOnTop on mount and when it changes
 watch(alwaysOnTop, (val) => {
@@ -290,29 +268,59 @@ const adjustStyleClasses = computed(() => {
   return { icon, border, padding, button: `${border} ${padding}` }
 })
 
-const islandPositionClasses = computed(() => [
-  isTop.value ? 'top-2' : 'bottom-2',
-  isLeft.value ? 'left-2' : 'right-2',
-])
-const islandMotionClasses = computed(() => {
-  const isHidden = motionPhase.value === 'leaving' || motionPhase.value === 'entering'
+const mainOffset = shallowRef({ x: 0, y: 0, width: 0, height: 0 })
+function measureMainOffset() {
+  const root = islandElement.value?.getBoundingClientRect()
+  const main = mainControlsElement.value?.getBoundingClientRect()
+  if (!root || !main || !main.width || !main.height)
+    return
 
-  return [
-    motionPhase.value === 'entering'
-      ? 'transition-none'
-      : 'transition-[opacity,transform] duration-200 ease-out',
-    motionPhase.value === 'idle' ? '' : 'will-change-[opacity,transform] pointer-events-none',
-    isHidden ? 'scale-95' : 'scale-100',
-    isHidden || concealed.value ? 'opacity-0' : 'opacity-100',
-    isHidden && isLeft.value ? '-translate-x-3' : '',
-    isHidden && !isLeft.value ? 'translate-x-3' : '',
-    isHidden && isTop.value ? '-translate-y-2' : '',
-    isHidden && !isTop.value ? 'translate-y-2' : '',
-  ]
+  const next = { x: main.left - root.left, y: main.top - root.top, width: main.width, height: main.height }
+  if (Object.keys(next).some(key => next[key as keyof typeof next] !== mainOffset.value[key as keyof typeof next]))
+    mainOffset.value = next
+}
+useResizeObserver([islandElement, mainControlsElement, islandContent], measureMainOffset)
+watch([() => props.anchor, expanded, direction, panelPresent], async () => {
+  await nextTick()
+  measureMainOffset()
+}, { flush: 'post' })
+
+const { width: islandWidth, height: islandHeight } = useElementSize(islandElement)
+const { width: viewportWidth, height: viewportHeight } = useWindowSize()
+const displays = useElectronAllDisplays()
+const fanRight = computed(() => {
+  const bounds = { x: window.screenX, y: window.screenY, width: window.outerWidth, height: window.outerHeight }
+  const workArea = findDominantDisplayArea(bounds, displays.value)?.workArea
+  const left = workArea?.x ?? 0
+  const width = workArea?.width ?? window.screen.availWidth
+  const anchorX = bounds.x + (props.anchor?.x ?? bounds.width / 2)
+  return anchorX - left <= left + width - anchorX
+})
+const islandPositionStyle = computed(() => {
+  const anchor = props.anchor
+  if (!anchor)
+    return {}
+
+  const width = islandWidth.value || 80
+  const height = islandHeight.value || 210
+  const bounds = { x: window.screenX, y: window.screenY, width: window.outerWidth, height: window.outerHeight }
+  const workArea = findDominantDisplayArea(bounds, displays.value)?.workArea
+  const minX = Math.max(8, (workArea?.x ?? bounds.x) - bounds.x + 8)
+  const minY = Math.max(8, (workArea?.y ?? bounds.y) - bounds.y + 8)
+  const maxX = Math.min(viewportWidth.value, workArea ? workArea.x + workArea.width - bounds.x : viewportWidth.value) - width - 8
+  const maxY = Math.min(viewportHeight.value, workArea ? workArea.y + workArea.height - bounds.y : viewportHeight.value) - height - 8
+  const main = mainOffset.value
+  const desiredMainX = fanRight.value ? anchor.x + 35 : anchor.x - (main.width || 80) - 35
+  const desiredX = desiredMainX - main.x
+  const desiredY = anchor.y - (main.height || 210) / 2 - main.y
+  return {
+    left: `${Math.max(minX, Math.min(desiredX, maxX))}px`,
+    top: `${Math.max(minY, Math.min(desiredY, maxY))}px`,
+  }
 })
 const mainControlsLayoutClasses = computed(() => [
-  'flex gap-1',
-  isTop.value ? 'flex-col-reverse' : 'flex-col',
+  'fan-actions',
+  fanRight.value ? 'fan-right' : 'fan-left',
 ])
 const panelPositionClasses = computed(() => {
   if (dock.value === 'top-left')
@@ -324,14 +332,6 @@ const panelPositionClasses = computed(() => {
 
   return ['origin-bottom-right']
 })
-
-/**
- * This is a know issue (or expected behavior maybe) to Electron.
- * We don't use this approach on Linux because it's not working.
- *
- * See `apps/stage-tamagotchi/src/main/windows/main/index.ts` for handler definition
- */
-const startDraggingWindow = !isLinux() ? defineInvoke(context.value, electronStartDraggingWindow) : undefined
 
 function refreshWindow() {
   window.location.reload()
@@ -347,15 +347,14 @@ function resetMainWindowPosition() {
 
 <template>
   <div
+    v-show="!!anchor"
     ref="island"
     data-testid="controls-island"
     :data-direction="direction"
     :data-scroll-owner="scrollWholeIsland ? 'island' : 'menu'"
-    :class="[
-      'fixed max-h-[calc(100dvh-1rem)] max-w-[calc(100dvw-1rem)]',
-      islandPositionClasses,
-      islandMotionClasses,
-    ]"
+    :style="islandPositionStyle"
+    :class="['fixed max-h-[calc(100dvh-1rem)] max-w-[calc(100dvw-1rem)]']"
+    @keydown.esc.stop="emit('close')"
   >
     <!-- Probes track viewport/rem sizes without adding scrollable overflow. -->
     <div aria-hidden="true" :class="['pointer-events-none invisible fixed size-0 overflow-hidden [contain:strict]']">
@@ -599,77 +598,67 @@ function resetMainWindowPosition() {
 
         <!-- Main Controls -->
         <div ref="mainControls" data-testid="main-controls" :class="['shrink-0', mainControlsLayoutClasses]">
-          <ControlButtonTooltip side="inward">
-            <ControlButton
-              v-track-button="{
-                name: 'controls_island_action',
-                action: expanded ? 'collapse_controls' : 'expand_controls',
-              }"
-              :button-style="adjustStyleClasses.button"
-              :aria-expanded="expanded"
-              :aria-controls="menuId"
-              :aria-label="expanded ? t('tamagotchi.stage.controls-island.collapse') : t('tamagotchi.stage.controls-island.expand')"
-              :class="['relative']"
-              @click="toggleControls"
-            >
-              <div
-                :class="['i-solar:alt-arrow-up-line-duotone scale-110 transition-all duration-300', 'text-neutral-800 dark:text-neutral-300', adjustStyleClasses.icon]"
-                :style="{ transform: `rotate(${arrowRotation}deg)` }"
-              />
-              <!-- Unread Notifications are in the menu. The dot tells the user to open it. -->
-              <Badge
-                v-if="notificationsUnread > 0"
-                dot
-                data-testid="controls-island-notifications-dot"
-                :class="['pointer-events-none absolute right-1 top-1 ring-2 ring-neutral-100 dark:ring-neutral-900']"
-              />
-            </ControlButton>
-            <template #tooltip>
-              {{ expanded ? t('tamagotchi.stage.controls-island.collapse') : t('tamagotchi.stage.controls-island.expand') }}
-            </template>
-          </ControlButtonTooltip>
+          <div class="fan-action">
+            <ControlButtonTooltip side="inward">
+              <ControlButton
+                v-track-button="{ name: 'controls_island_action', action: expanded ? 'collapse_controls' : 'expand_controls' }"
+                :button-style="adjustStyleClasses.button"
+                :aria-expanded="expanded"
+                :aria-controls="menuId"
+                :aria-label="expanded ? t('tamagotchi.stage.controls-island.collapse') : t('tamagotchi.stage.controls-island.expand')"
+                :class="['relative']"
+                @click="toggleControls"
+              >
+                <div
+                  :class="['i-solar:alt-arrow-up-line-duotone scale-110 transition-all duration-300', 'text-neutral-800 dark:text-neutral-300', adjustStyleClasses.icon]"
+                  :style="{ transform: `rotate(${arrowRotation}deg)` }"
+                />
+                <Badge
+                  v-if="notificationsUnread > 0"
+                  dot
+                  data-testid="controls-island-notifications-dot"
+                  :class="['pointer-events-none absolute right-1 top-1 ring-2 ring-neutral-100 dark:ring-neutral-900']"
+                />
+              </ControlButton>
+              <template #tooltip>
+                {{ expanded ? t('tamagotchi.stage.controls-island.collapse') : t('tamagotchi.stage.controls-island.expand') }}
+              </template>
+            </ControlButtonTooltip>
+          </div>
 
-          <StatusIsland
-            v-if="IS_DEV"
-            :button-style="adjustStyleClasses.button"
-            :icon-class="adjustStyleClasses.icon"
-          />
+          <div class="fan-action">
+            <ControlsIslandChatButton :button-style="adjustStyleClasses.button" :icon-class="adjustStyleClasses.icon" />
+          </div>
 
-          <ControlsIslandChatButton :button-style="adjustStyleClasses.button" :icon-class="adjustStyleClasses.icon" />
+          <div class="fan-action">
+            <ControlButtonTooltip side="inward">
+              <ControlButton
+                data-testid="controls-island-microphone"
+                :button-style="adjustStyleClasses.button"
+                :aria-label="microphoneLabel"
+                :aria-pressed="enabled"
+                :aria-busy="microphonePending"
+                :disabled="microphonePending"
+                @click="toggleMicrophone"
+              >
+                <Transition name="fade" mode="out-in">
+                  <IndicatorMicVolume v-if="enabled" :class="adjustStyleClasses.icon" />
+                  <div v-else :class="['i-ph:microphone-slash text-neutral-800 dark:text-neutral-300', adjustStyleClasses.icon]" />
+                </Transition>
+              </ControlButton>
+              <template #tooltip>
+                {{ microphoneLabel }}
+              </template>
+            </ControlButtonTooltip>
+          </div>
 
-          <ControlButtonTooltip side="inward">
-            <ControlButton
-              data-testid="controls-island-microphone"
-              :button-style="adjustStyleClasses.button"
-              :aria-label="microphoneLabel"
-              :aria-pressed="enabled"
-              :aria-busy="microphonePending"
-              :disabled="microphonePending"
-              @click="toggleMicrophone"
-            >
-              <Transition name="fade" mode="out-in">
-                <IndicatorMicVolume v-if="enabled" :class="adjustStyleClasses.icon" />
-                <div v-else :class="['i-ph:microphone-slash text-neutral-800 dark:text-neutral-300', adjustStyleClasses.icon]" />
-              </Transition>
-            </ControlButton>
-            <template #tooltip>
-              {{ microphoneLabel }}
-            </template>
-          </ControlButtonTooltip>
+          <div class="fan-action">
+            <ControlsIslandSpeechMute :button-style="adjustStyleClasses.button" :icon-class="adjustStyleClasses.icon" />
+          </div>
 
-          <ControlsIslandSpeechMute
-            :button-style="adjustStyleClasses.button"
-            :icon-class="adjustStyleClasses.icon"
-          />
-
-          <ControlButtonTooltip side="inward">
-            <ControlButton :button-style="adjustStyleClasses.button" :class="['cursor-move', { 'drag-region': isLinux }]" @mousedown="startDraggingWindow?.()">
-              <div :class="['i-ph:arrows-out-cardinal text-neutral-800 dark:text-neutral-300', adjustStyleClasses.icon]" />
-            </ControlButton>
-            <template #tooltip>
-              {{ t('tamagotchi.stage.controls-island.drag-to-move-window') }}
-            </template>
-          </ControlButtonTooltip>
+          <div v-if="IS_DEV" class="fan-action">
+            <StatusIsland :button-style="adjustStyleClasses.button" :icon-class="adjustStyleClasses.icon" />
+          </div>
         </div>
       </div>
     </ScrollableArea>
@@ -677,6 +666,53 @@ function resetMainWindowPosition() {
 </template>
 
 <style scoped>
+.fan-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 5.5rem;
+  animation: fan-appear 240ms ease-out both;
+}
+
+.fan-action {
+  width: fit-content;
+}
+
+.fan-actions > :nth-child(2),
+.fan-actions > :nth-child(3) {
+  margin-left: 1.5rem;
+}
+
+.fan-left > :nth-child(2),
+.fan-left > :nth-child(3) {
+  margin-left: 0;
+  margin-right: 1.5rem;
+}
+
+.fan-left {
+  align-items: flex-end;
+}
+
+.fan-actions :deep(button) {
+  transition: transform 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+
+.fan-actions :deep(button:hover),
+.fan-actions :deep(button:focus-visible) {
+  transform: scale(1.14);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 20%);
+}
+
+@keyframes fan-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fan-actions { animation: none; }
+  .fan-actions :deep(button) { transition: none; }
+}
+
 .controls-menu-enter {
   animation: controls-menu-enter 400ms cubic-bezier(0.32, 0.72, 0, 1) both;
 }

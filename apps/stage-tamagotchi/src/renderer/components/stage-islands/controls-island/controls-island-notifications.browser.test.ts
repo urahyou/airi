@@ -27,6 +27,7 @@ const authState = vi.hoisted(() => ({
 }))
 
 vi.mock('@proj-airi/electron-vueuse', () => ({
+  useElectronAllDisplays: () => ref([]),
   useElectronEventaContext: () => ref({ on: vi.fn(() => vi.fn()), emit: vi.fn() }),
   useElectronEventaInvoke: () => vi.fn().mockResolvedValue(false),
   useElectronMouseInElement: () => ({ isOutside: ref(false) }),
@@ -58,6 +59,7 @@ const label = (key: string) => i18n.global.t(`tamagotchi.stage.controls-island.$
 function mountIsland() {
   const dock = ref<'bottom-right'>('bottom-right')
   return render(ControlsIsland, {
+    props: { anchor: { x: 200, y: 250 } },
     global: {
       provide: {
         [controlsIslandPlacementKey as symbol]: {

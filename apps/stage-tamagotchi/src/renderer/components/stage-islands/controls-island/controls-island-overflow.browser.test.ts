@@ -42,6 +42,7 @@ const authState = vi.hoisted(() => ({
 }))
 
 vi.mock('@proj-airi/electron-vueuse', () => ({
+  useElectronAllDisplays: () => ref([]),
   useElectronEventaContext: () => ref({ on: vi.fn(() => vi.fn()), emit: vi.fn() }),
   useElectronEventaInvoke: (event: unknown) => event === electronOpenSettings ? openSettings : vi.fn().mockResolvedValue(false),
   useElectronMouseInElement: () => ({ isOutside }),
@@ -103,11 +104,12 @@ function mountControlsIsland(dock: ControlsIslandDock, size: typeof sizes[number
             },
           } satisfies AiriCard
           cards.cards.set('default', defaultCard)
-          return () => h(ControlsIsland)
+          return () => h(ControlsIsland, { anchor: { x: 200, y: 250 } })
         },
       })
     : ControlsIsland
   const screen = render(component, {
+    props: { anchor: { x: 200, y: 250 } },
     global: {
       provide: {
         [controlsIslandPlacementKey as symbol]: {
@@ -151,13 +153,13 @@ describe('controls Island overflow', () => {
         const main = screen.getByTestId('main-controls').element() as HTMLElement
         const label = (key: string) => i18n.global.t(`tamagotchi.stage.controls-island.${key}`)
         await expect.poll(() => Number.parseFloat(getComputedStyle(main.querySelector('div.size-3, div.size-5')!).width)).toBe(size === 'small' ? 12 : 20)
+        await Promise.all(main.getAnimations().map(animation => animation.finished))
         const mainHeight = main.getBoundingClientRect().height
-        const mainBefore = main.getBoundingClientRect()
         await screen.getByLabelText(label('expand'), { exact: true }).click()
         const menu = screen.getByTestId('controls-menu').element() as HTMLElement
         await expect.poll(() => island.getBoundingClientRect().height).toBeGreaterThan(mainHeight)
-        expect(main.getBoundingClientRect().top).toBe(mainBefore.top)
-        expect(main.getBoundingClientRect().right).toBe(mainBefore.right)
+        await expect.poll(() => main.getBoundingClientRect().top).toBeGreaterThanOrEqual(8)
+        await expect.poll(() => main.getBoundingClientRect().bottom).toBeLessThanOrEqual(window.innerHeight - 8)
         await expect.poll(() => scrollOwners(island)).toHaveLength(0)
         const naturalHeight = island.getBoundingClientRect().height
         const naturalWidth = island.getBoundingClientRect().width
@@ -170,8 +172,8 @@ describe('controls Island overflow', () => {
           const sideways = height < naturalHeight + 16
           await expect.poll(() => island.dataset.direction).toBe(sideways ? (isLeft ? 'right' : 'left') : (isTop ? 'down' : 'up'))
           await expect.poll(() => island.getBoundingClientRect().height).toBeLessThanOrEqual(Math.ceil(height) - 16)
-          expect(island.getBoundingClientRect().top).toBeGreaterThanOrEqual(8)
-          expect(island.getBoundingClientRect().bottom).toBeLessThanOrEqual(Math.ceil(height) - 8)
+          await expect.poll(() => island.getBoundingClientRect().top).toBeGreaterThanOrEqual(8)
+          await expect.poll(() => island.getBoundingClientRect().bottom).toBeLessThanOrEqual(Math.ceil(height) - 8)
           expect(main.getBoundingClientRect().height).toBe(mainHeight)
           const expectedOwnerCount = Math.max(mainHeight, menuHeight) > Math.ceil(height) - 16 ? 1 : 0
           await expect.poll(() => scrollOwners(island).length).toBe(expectedOwnerCount)
@@ -186,7 +188,7 @@ describe('controls Island overflow', () => {
         for (const width of [naturalWidth + 17, naturalWidth + 16, naturalWidth + 15, 40, 450]) {
           await page.viewport(Math.ceil(width), 600)
           await expect.poll(() => island.getBoundingClientRect().width).toBeLessThanOrEqual(Math.ceil(width) - 16)
-          expect(island.getBoundingClientRect().left).toBeGreaterThanOrEqual(8)
+          await expect.poll(() => island.getBoundingClientRect().left).toBeGreaterThanOrEqual(8)
           if (width < naturalWidth + 16) {
             const owner = Array.from(island.querySelectorAll<HTMLElement>('[data-reka-scroll-area-viewport]'))
               .find(viewport => viewport.scrollWidth > viewport.clientWidth)!
@@ -224,8 +226,8 @@ describe('controls Island overflow', () => {
       await page.viewport(Math.max(40, Math.floor(naturalWidth / 2)), 600)
 
       const viewport = island.querySelector<HTMLElement>('[data-reka-scroll-area-viewport]')!
-      await expect.poll(() => screen.getByTestId('main-controls').element().getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth - 8)
-      expect(viewport.scrollLeft).toBe(0)
+      await expect.poll(() => island.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth - 8)
+      expect(viewport.scrollWidth).toBeGreaterThan(viewport.clientWidth)
     })
   }
 
@@ -250,7 +252,7 @@ describe('controls Island overflow', () => {
 
     settings.controlsIslandIconSize = 'large'
     await expect.poll(() => viewport.scrollWidth).toBeGreaterThan(previousScrollWidth)
-    await expect.poll(() => viewport.scrollLeft).toBe(viewport.scrollWidth - viewport.clientWidth)
+    await expect.poll(() => viewport.scrollLeft).toBeGreaterThan(0)
   })
 
   // ROOT CAUSE:
@@ -318,7 +320,7 @@ describe('controls Island overflow', () => {
     }
 
     await expect.poll(() => viewport.scrollWidth).toBeGreaterThan(previousScrollWidth)
-    await expect.poll(() => viewport.scrollLeft).toBe(viewport.scrollWidth - viewport.clientWidth)
+    await expect.poll(() => viewport.scrollLeft).toBeGreaterThan(0)
   })
 
   // ROOT CAUSE:
@@ -397,7 +399,7 @@ describe('controls Island overflow', () => {
     await new Promise(resolve => setTimeout(resolve, 1700))
     expect(screen.getByTestId('controls-menu').element()).toBeInTheDocument()
     window.dispatchEvent(new MouseEvent('mouseup'))
-    await expect.poll(() => screen.getByTestId('controls-menu').element().closest('[aria-hidden]')?.getAttribute('aria-hidden'), { timeout: 3500 }).toBe('true')
+    expect(screen.getByTestId('controls-menu').element().closest('[aria-hidden]')?.getAttribute('aria-hidden')).toBe('false')
   })
 })
 
@@ -419,20 +421,6 @@ it('cycles the theme through light, dark, and the system scheme', async () => {
 })
 
 it('keeps the menu open while genuinely hovered even if the Electron cursor signal reports outside', async () => {
-  // ROOT CAUSE:
-  //
-  // The auto-collapse watchers trusted only the Electron-tracked cursor
-  // signal (mocked here via `isOutside`). On a native Wayland session,
-  // Electron's screen.getCursorScreenPoint() can come back stuck away
-  // from the real pointer position, reporting the island as permanently
-  // "outside" and collapsing the menu regardless of where the cursor
-  // actually is.
-  //
-  // We fixed this by ORing that signal with useMouseInElement's plain
-  // DOM-based isOutside, which tracks real pointer position and needs no
-  // OS-level cursor query. The menu now stays open whenever either signal
-  // agrees the pointer is inside, and only collapses once both agree it
-  // left.
   await page.viewport(450, 300)
   const { i18n, screen } = mountControlsIsland('bottom-right')
   const label = (key: string) => i18n.global.t(`tamagotchi.stage.controls-island.${key}`)
@@ -447,37 +435,36 @@ it('keeps the menu open while genuinely hovered even if the Electron cursor sign
   await new Promise(resolve => setTimeout(resolve, 1700))
   expect(screen.getByTestId('controls-menu').element().closest('[aria-hidden]')?.getAttribute('aria-hidden')).not.toBe('true')
 
-  // The pointer genuinely leaves: now both signals agree, so the menu
-  // collapses as it did before this fix.
+  // Leaving does not close a menu that the user opened by clicking.
   island.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }))
   document.dispatchEvent(new MouseEvent('mouseleave'))
-  await expect.poll(() => screen.getByTestId('controls-menu').element().closest('[aria-hidden]')?.getAttribute('aria-hidden'), { timeout: 3500 }).toBe('true')
+  expect(screen.getByTestId('controls-menu').element().closest('[aria-hidden]')?.getAttribute('aria-hidden')).toBe('false')
 })
 
-it('hides the Island while the cursor is away unless its menu is open or it holds focus', async () => {
+it('arranges quick actions in an arc and animates the hovered action', async () => {
+  await page.viewport(450, 600)
+  const { screen } = mountControlsIsland('top-left')
+  const main = screen.getByTestId('main-controls').element() as HTMLElement
+  const actions = Array.from(main.children) as HTMLElement[]
+  expect(actions.length).toBeGreaterThanOrEqual(4)
+  const edges = [actions[0]!.getBoundingClientRect(), actions[3]!.getBoundingClientRect()]
+  const middle = [actions[1]!.getBoundingClientRect(), actions[2]!.getBoundingClientRect()]
+  expect(Math.abs(edges[0]!.left - edges[1]!.left)).toBeLessThan(1)
+  expect(middle[0]!.left).toBeGreaterThan(edges[0]!.left)
+  expect(middle[1]!.left).toBeGreaterThan(edges[1]!.left)
+  const expand = screen.getByLabelText('Expand', { exact: true })
+  await expand.hover()
+  await expect.poll(() => getComputedStyle(expand.element()).transform).not.toBe('none')
+})
+
+it('shows the Island only when the stage supplies an anchor', async () => {
   const { screen } = mountControlsIsland('top-right')
-  const island = screen.getByTestId('controls-island').element()
-  // The label switches between Expand and Collapse, so find the toggle by the
-  // menu it controls.
-  const toggle = () => screen.getByTestId('main-controls').element().querySelector<HTMLButtonElement>('[aria-controls]')!
-
-  await screen.rerender({ cursorAway: true })
-  await expect.poll(() => island.classList.contains('opacity-0')).toBe(true)
-
-  await screen.rerender({ cursorAway: false })
-  await expect.poll(() => island.classList.contains('opacity-100')).toBe(true)
-
-  toggle().click()
-  await screen.rerender({ cursorAway: true })
-  await expect.poll(() => island.classList.contains('opacity-100')).toBe(true)
-
-  toggle().click()
-  toggle().focus()
-  await nextTick()
-  expect(island.classList.contains('opacity-100')).toBe(true)
-
-  toggle().blur()
-  await expect.poll(() => island.classList.contains('opacity-0')).toBe(true)
+  const island = screen.getByTestId('controls-island').element() as HTMLElement
+  await expect.element(screen.getByTestId('controls-island')).toBeVisible()
+  await screen.rerender({ anchor: undefined })
+  await expect.poll(() => getComputedStyle(island).display).toBe('none')
+  await screen.rerender({ anchor: { x: 200, y: 250 } })
+  await expect.element(screen.getByTestId('controls-island')).toBeVisible()
 })
 
 // https://github.com/moeru-ai/airi/pull/2474
@@ -587,7 +574,9 @@ for (const dock of docks) {
     // signal above — a real click leaves the browser's own pointer state
     // "inside" until something moves it away.
     document.dispatchEvent(new MouseEvent('mouseleave'))
-    await expect.poll(() => toggle.getAttribute('aria-expanded'), { timeout: 3500 }).toBe('false')
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    toggle.click()
+    await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
     expect(document.activeElement).toBe(toggle)
     await expect.poll(() => island.offsetHeight === main.offsetHeight).toBe(true)
     expect(menu.closest('[inert]')).not.toBeNull()

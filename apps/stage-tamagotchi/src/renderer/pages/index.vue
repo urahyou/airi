@@ -7,10 +7,10 @@ import { errorMessageFrom } from '@moeru/std'
 import { electron } from '@proj-airi/electron-eventa'
 import {
   useElectronEventaInvoke,
+  useElectronMouse,
   useElectronMouseAroundWindowBorder,
   useElectronMouseInElement,
   useElectronMouseInWindow,
-  useElectronRelativeMouse,
 } from '@proj-airi/electron-vueuse'
 import { useModelStore, useThreeSceneIsTransparentAtPoint } from '@proj-airi/stage-ui-three'
 import { HearingStatus, HoloCoupon } from '@proj-airi/stage-ui/components'
@@ -26,7 +26,7 @@ import { useFeatureFlagsStore } from '@proj-airi/stage-ui/stores/feature-flags'
 import { useOnboardingStore } from '@proj-airi/stage-ui/stores/onboarding'
 import { useSettings } from '@proj-airi/stage-ui/stores/settings'
 import { useVoiceStore } from '@proj-airi/stage-ui/stores/voice'
-import { refDebounced } from '@vueuse/core'
+import { refDebounced, useMouse } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onMounted, onScopeDispose, ref, shallowRef, toRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -85,7 +85,8 @@ const { isOutside: isOutsideWindow } = useElectronMouseInWindow()
 // read its answer rather than mounting a second set of listeners over the same element.
 const isOutside = computed(() => controlsIslandRef.value?.isOutside ?? true)
 const isOutsideFor250Ms = refDebounced(isOutside, 250)
-const { x: relativeMouseX, y: relativeMouseY } = useElectronRelativeMouse()
+const { x: relativeMouseX, y: relativeMouseY } = useMouse({ type: 'client' })
+const { x: screenMouseX, y: screenMouseY } = useElectronMouse()
 // NOTICE: In real-world use cases of Fade on Hover feature, the cursor may move around the edge of the
 // model rapidly, causing flickering effects when checking pixel transparency strictly.
 // Here we use render-target pixel sampling to keep detection aligned with the actual render output.
@@ -190,15 +191,12 @@ const isTransparentForMouseEvents = computed(() => {
 const { isNearAnyBorder: isAroundWindowBorder } = useElectronMouseAroundWindowBorder({ threshold: 10 })
 const isAroundWindowBorderFor250Ms = refDebounced(isAroundWindowBorder, 250)
 
-// The controls Island hides while the cursor is away from the window. The edge
-// band counts as the window, because a resize holds the cursor there. On
-// Wayland the cursor signal can stick outside (#2521), so the Island stays.
+// On Wayland the cursor signal can stick outside, so disable native click-through there.
 const isWayland = ref(true)
-// A failed probe keeps `true`, so the Island stays shown as before this feature.
+// A failed probe keeps click-through disabled.
 useElectronEventaInvoke(electronAppIsWayland)()
   .then(value => isWayland.value = value)
-  .catch(error => console.warn('[Main Page] Failed to detect Wayland; the controls Island stays shown:', errorMessageFrom(error)))
-const cursorAwayFromWindow = computed(() => !isWayland.value && isOutsideWindow.value && !isAroundWindowBorder.value)
+  .catch(error => console.warn('[Main Page] Failed to detect Wayland; click-through stays disabled:', errorMessageFrom(error)))
 
 const setIgnoreMouseEvents = useElectronEventaInvoke(electron.window.setIgnoreMouseEvents)
 
@@ -297,6 +295,107 @@ const modelSettingsRuntimeSnapshot = computed<ModelSettingsRuntimeSnapshot>(() =
 
 const fullscreen = useFullscreenStore()
 const { phase: fullscreenPhase, active: fullscreenActive } = storeToRefs(fullscreen)
+
+const canDragModel = computed(() => stageMounted.value
+  && !stagePaused.value
+  && !fullscreenActive.value
+  && !shouldFadeOnCursorWithin.value
+  && isPointerOverStageCanvas.value
+  && !isTransparentForMouseEvents.value)
+
+const modelMenuAnchor = ref<{ x: number, y: number }>()
+const setModelWindowBounds = useElectronEventaInvoke(electron.window.setBounds)
+const modelPointer = ref<{
+  id: number
+  x: number
+  y: number
+  screenX: number
+  screenY: number
+  bounds: { x: number, y: number, width: number, height: number }
+  dragged: boolean
+}>()
+
+function handleModelPointerDown(event: PointerEvent) {
+  relativeMouseX.value = event.clientX
+  relativeMouseY.value = event.clientY
+  if (event.button !== 0 || !canDragModel.value)
+    return
+
+  event.preventDefault()
+  event.stopPropagation()
+  modelPointer.value = {
+    id: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    screenX: event.screenX,
+    screenY: event.screenY,
+    bounds: { x: window.screenX, y: window.screenY, width: window.outerWidth, height: window.outerHeight },
+    dragged: false,
+  }
+  ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+}
+
+function handleModelPointerMove(event: PointerEvent) {
+  relativeMouseX.value = event.clientX
+  relativeMouseY.value = event.clientY
+  const pointer = modelPointer.value
+  if (!pointer || pointer.id !== event.pointerId)
+    return
+  if (!pointer.dragged && Math.hypot(event.screenX - pointer.screenX, event.screenY - pointer.screenY) < 6)
+    return
+
+  pointer.dragged = true
+  modelMenuAnchor.value = undefined
+  if (pointer.bounds.width && pointer.bounds.height) {
+    void setModelWindowBounds([{
+      ...pointer.bounds,
+      x: Math.round(pointer.bounds.x + event.screenX - pointer.screenX),
+      y: Math.round(pointer.bounds.y + event.screenY - pointer.screenY),
+    }])
+  }
+}
+
+function handleModelPointerUp(event: PointerEvent) {
+  const pointer = modelPointer.value
+  if (!pointer || pointer.id !== event.pointerId)
+    return
+
+  modelPointer.value = undefined
+  if (!pointer.dragged)
+    modelMenuAnchor.value = modelMenuAnchor.value ? undefined : { x: pointer.x, y: pointer.y }
+}
+
+function handleModelPointerCancel() {
+  modelPointer.value = undefined
+}
+
+function closeModelMenu(event: PointerEvent) {
+  const target = event.target
+  if (!modelMenuAnchor.value || controlsOverlayActive.value || !(target instanceof Node))
+    return
+  if (controlsIslandRef.value?.element?.contains(target))
+    return
+  if (target === stageCanvas.value) {
+    relativeMouseX.value = event.clientX
+    relativeMouseY.value = event.clientY
+    if (!isTransparentForMouseEvents.value)
+      return
+  }
+  modelMenuAnchor.value = undefined
+}
+
+function closeModelMenuOnBlur() {
+  if (!controlsOverlayActive.value)
+    modelMenuAnchor.value = undefined
+}
+
+document.addEventListener('pointerdown', closeModelMenu, true)
+window.addEventListener('blur', closeModelMenuOnBlur)
+onScopeDispose(() => {
+  document.removeEventListener('pointerdown', closeModelMenu, true)
+  window.removeEventListener('blur', closeModelMenuOnBlur)
+})
+
 const router = useRouter()
 useFullscreenHost()
 const enterFullscreenWindow = useElectronEventaInvoke(electronMainWindowEnterFullscreen)
@@ -580,8 +679,8 @@ watch(fullscreenPhase, (phase) => {
  * - {@link setIgnoreMouseEvents}
  */
 function handleFadeOnHoverInteractionChange() {
-  // Settings cover the work area, so the whole window takes the pointer and the stage never fades.
-  if (stagePaused.value || fullscreenActive.value) {
+  // Settings and active model interactions take the pointer until they finish.
+  if (stagePaused.value || fullscreenActive.value || modelPointer.value || modelMenuAnchor.value) {
     isIgnoringMouseEvents.value = false
     shouldFadeOnCursorWithin.value = false
     setIgnoreMouseEvents([false, { forward: true }])
@@ -631,7 +730,7 @@ function handleFadeOnHoverInteractionChange() {
 }
 
 watch(
-  [outsideHearingStatus, outsideAuthStatus, isOutside, isOutsideFor250Ms, isPointerOverStageCanvas, isAroundWindowBorder, isAroundWindowBorderFor250Ms, isOutsideWindow, isTransparent, isTransparentForMouseEvents, controlsOverlayActive, fadeOnHoverEnabled, alwaysOnTop, stagePaused, isWayland, fullscreenActive],
+  [outsideHearingStatus, outsideAuthStatus, isOutside, isOutsideFor250Ms, isPointerOverStageCanvas, isAroundWindowBorder, isAroundWindowBorderFor250Ms, isOutsideWindow, isTransparent, isTransparentForMouseEvents, controlsOverlayActive, fadeOnHoverEnabled, alwaysOnTop, stagePaused, isWayland, fullscreenActive, modelPointer, modelMenuAnchor],
   handleFadeOnHoverInteractionChange,
   { immediate: true },
 )
@@ -676,8 +775,8 @@ onMounted(() => {
 })
 
 const cursorPosition = computed(() => ({
-  x: relativeMouseX.value,
-  y: relativeMouseY.value,
+  x: screenMouseX.value - window.screenX,
+  y: screenMouseY.value - window.screenY,
 }))
 </script>
 
@@ -704,7 +803,7 @@ const cursorPosition = computed(() => ({
     >
       <div
         ref="stageFrameElement"
-        :style="stageFrameStyle"
+        :style="[stageFrameStyle, { cursor: canDragModel ? 'grab' : undefined }]"
         :class="[
           shouldFadeOnCursorWithin ? 'op-0' : 'op-100',
           'absolute',
@@ -713,6 +812,10 @@ const cursorPosition = computed(() => ({
           'rounded-2xl',
           'transition-opacity duration-250 ease-in-out',
         ]"
+        @pointerdown.capture="handleModelPointerDown"
+        @pointermove.capture="handleModelPointerMove"
+        @pointerup.capture="handleModelPointerUp"
+        @pointercancel.capture="handleModelPointerCancel"
       >
         <!--
           Every element that paints over the stage carries the opaque marker,
@@ -742,8 +845,9 @@ const cursorPosition = computed(() => ({
           <ControlsIslandRoot :frozen="controlsIslandInteractionActive">
             <ControlsIsland
               ref="controlsIslandRef"
-              :cursor-away="cursorAwayFromWindow"
+              :anchor="modelMenuAnchor"
               :[stageOpaqueAttribute]="true"
+              @close="modelMenuAnchor = undefined"
               @interaction-change="controlsIslandInteractionActive = $event"
             />
           </ControlsIslandRoot>
